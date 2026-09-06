@@ -1,0 +1,16 @@
+torch
+torchvision
+torchaudio
+numpy
+opencv-python
+pillow
+efficientnet_pytorch
+PyWavelets
+scikit-learn
+matplotlib
+pandas
+tqdm
+albumentations
+retina-face
+scikit-image
+dlib
