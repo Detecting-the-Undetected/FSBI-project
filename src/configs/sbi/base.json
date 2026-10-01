@@ -4,5 +4,5 @@
     "image_size": 380,
     "cropped_dir": "/kaggle/input/datasets/brutalrb/fsbi-ff-data/cropped_faces",
     "landmark_dir": "/kaggle/input/datasets/brutalrb/fsbi-ff-data/landmarks",
-    "debug": true
+    "debug": false
 }
