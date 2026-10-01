@@ -10,16 +10,18 @@ import pywt
 from utils.funcs import crop_face
 
 class ESBI_Dataset(Dataset):
-    def __init__(self, phase='train', image_size=384, n_frames=8, wavelet="sym2", mode="reflect"):
+    def __init__(self, phase='train', image_size=384, n_frames=8, wavelet="sym2", mode="reflect",
+                 cropped_dir=None, landmark_dir=None):
         self.phase = phase
         self.image_size = (image_size, image_size)
         self.w = wavelet
         self.m = mode
-        
-        # Windows Absolute Paths
-        self.path_lm = '/kaggle/input/datasets/brutalrb/fsbi-ff-data/landmarks'
-        cropped_dir = '/kaggle/input/datasets/brutalrb/fsbi-ff-data/cropped_faces'
-        
+
+        # Paths are now passable as arguments (Kaggle vs local), falling back to
+        # the Kaggle dataset mount if not explicitly provided.
+        self.path_lm = landmark_dir or '/kaggle/input/fsbi-ff-data/landmarks'
+        cropped_dir = cropped_dir or '/kaggle/input/fsbi-ff-data/cropped_faces'
+
         video_folders = sorted(os.listdir(cropped_dir))
         if phase == 'train':
             video_folders = video_folders[:720]
@@ -32,15 +34,28 @@ class ESBI_Dataset(Dataset):
         for folder in video_folders:
             frames = sorted(glob(os.path.join(cropped_dir, folder, '*.jpg')))
             self.image_list.extend(frames)
-        
+
         print(f'ESBI({phase}): Found {len(self.image_list)} images in {len(video_folders)} videos.')
 
     def get_dwt_rgb(self, x):
-        # Wavelet Transform integration for your architecture
-        coeffs = pywt.dwt2(x, self.w, mode=self.m)
-        LL, (LH, HL, HH) = coeffs
-        # Standardizing shapes for the model input
-        return x.transpose(2, 0, 1) 
+        """
+        Implements the FSBI paper's Frequency Features Generator (Section 3.2):
+        for each RGB channel, take the DWT approximate coefficient (LL), resize
+        it back to the original resolution, and average it with the original
+        channel. Stack the three fused channels depthwise.
+
+        x: HxWx3 float32 array in [0, 1].
+        Returns: 3xHxW float32 array (channel-first, for PyTorch).
+        """
+        h, w = x.shape[:2]
+        fused_channels = []
+        for c in range(3):
+            LL, (LH, HL, HH) = pywt.dwt2(x[:, :, c], self.w, mode=self.m)
+            LL_resized = cv2.resize(LL.astype('float32'), (w, h), interpolation=cv2.INTER_LINEAR)
+            fused = (LL_resized + x[:, :, c]) / 2.0
+            fused_channels.append(fused)
+        img_fsbi = np.stack(fused_channels, axis=0)  # (3, H, W)
+        return img_fsbi.astype('float32')
 
     def self_blending(self, img, landmark, label=None):
         # Class 2: Reenactment (Mouth/Nose only) | Class 1: FaceSwap (Full)
