@@ -27,6 +27,8 @@ class ESBI_Dataset(Dataset):
             video_folders = video_folders[:720]
         elif phase == 'val':
             video_folders = video_folders[720:860]
+        elif phase == 'stress':
+            video_folders = video_folders[:1]
         else:
             video_folders = video_folders[860:]
 
