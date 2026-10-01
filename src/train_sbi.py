@@ -51,14 +51,25 @@ def main(args):
     batch_size = cfg['batch_size']
 
     # Initialize Datasets
-    train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode)
-    val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode)
+    # PORTABILITY FIX: read dataset paths from config (falls back to esbi.py's
+    # defaults if not present) instead of hardcoding Kaggle paths inside
+    # ESBI_Dataset — lets the same code run locally or on Kaggle by just
+    # changing base.json, not the dataset class.
+    cropped_dir = cfg.get('cropped_dir')
+    landmark_dir = cfg.get('landmark_dir')
+    train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
+                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir)
+    val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
+                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir)
 
     # SPEED FIX: Ryzen 5 9600X has 6 cores / 12 threads. 4 workers was leaving
     # capacity unused if the dataloader (image decode + wavelet transform) is
     # the bottleneck. Bumped to 6 — watch nvidia-smi; if GPU util is still <90%,
     # try 8.
-    num_workers = 4
+    # PORTABILITY FIX: hardcoding a worker count tuned for your local Ryzen
+    # 9600X doesn't make sense on Kaggle (which has a different CPU). Derive
+    # it from the actual machine instead.
+    num_workers = min(4, os.cpu_count() or 2)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset_esbi, 
@@ -154,7 +165,9 @@ def main(args):
             img = data['img'].to(device, non_blocking=True).float().to(memory_format=torch.channels_last)
             target = data['label'].to(device, non_blocking=True).long()
             
-            model.optimizer.zero_grad()
+            # NOTE: removed the redundant model.optimizer.zero_grad() that used to
+            # be here — model.training_step() already calls it internally at the
+            # start of each of SAM's two steps, so this was a harmless no-op.
 
             # NOTE: model.training_step() runs SAM's two required forward/backward
             # passes AND both optimizer.first_step()/second_step() calls internally
@@ -164,7 +177,17 @@ def main(args):
             # backward() calls (this was causing the "backward through the graph a
             # second time" crash).
             try:
-                with torch.amp.autocast('cuda'):
+                # SPEED/STABILITY FIX: switched from fp16 to bf16 autocast. fp16
+                # has a narrow dynamic range and without a GradScaler (which we
+                # can't cleanly use here because SAM calls backward() internally,
+                # twice, inside training_step) gradients can silently underflow
+                # to zero, hurting convergence. bf16 has the same exponent range
+                # as fp32, so it doesn't need loss scaling at all and is numerically
+                # safe here. Note: on Turing-class GPUs (e.g. Kaggle's T4) bf16
+                # isn't hardware-accelerated the way it is on Ampere/Ada (e.g. your
+                # local RTX 4060), so you may not see a speed win on Kaggle's T4,
+                # but you will get correct, stable training either way.
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     output = model.training_step(img, target)
                     loss = criterion(output, target)
             except torch.cuda.OutOfMemoryError:
@@ -194,14 +217,18 @@ def main(args):
             target = data['label'].to(device, non_blocking=True).long()
             
             with torch.no_grad():
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     output = model(img)
                     loss = criterion(output, target)
             
             val_loss += loss.item()
             val_acc += compute_accuracy(F.log_softmax(output, dim=1), target)
             
-            output_dict.extend(output.softmax(1).cpu().data.numpy().tolist())
+            # FIX: cast to float32 before softmax. Computing softmax in fp16/bf16
+            # and feeding the result straight to sklearn can produce rows that
+            # don't sum to exactly 1.0 due to low-precision rounding, which is
+            # what caused the "Target scores need to be probabilities" warning.
+            output_dict.extend(output.float().softmax(1).cpu().data.numpy().tolist())
             target_dict.extend(target.cpu().data.numpy().tolist())
             
         val_losses_avg = val_loss / len(val_loader)
