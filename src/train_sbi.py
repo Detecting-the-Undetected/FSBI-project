@@ -58,7 +58,7 @@ def main(args):
     # capacity unused if the dataloader (image decode + wavelet transform) is
     # the bottleneck. Bumped to 6 — watch nvidia-smi; if GPU util is still <90%,
     # try 8.
-    num_workers = 6
+    num_workers = 4
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset_esbi, 
