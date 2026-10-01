@@ -57,7 +57,7 @@ def main(args):
     # changing base.json, not the dataset class.
     cropped_dir = cfg.get('cropped_dir')
     landmark_dir = cfg.get('landmark_dir')
-    train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
+    train_dataset_esbi = ESBI_Dataset(phase=cfg.get('phase'), image_size=image_size, wavelet=args.wavelet, mode=args.mode,
                                        cropped_dir=cropped_dir, landmark_dir=landmark_dir)
     val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
                                      cropped_dir=cropped_dir, landmark_dir=landmark_dir)
