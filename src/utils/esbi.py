@@ -11,7 +11,7 @@ from utils.funcs import crop_face
 
 class ESBI_Dataset(Dataset):
     def __init__(self, phase='train', image_size=384, n_frames=8, wavelet="sym2", mode="reflect",
-                 cropped_dir=None, landmark_dir=None):
+                 cropped_dir=None, landmark_dir=None, debug=False):
         self.phase = phase
         self.image_size = (image_size, image_size)
         self.w = wavelet
@@ -23,14 +23,17 @@ class ESBI_Dataset(Dataset):
         cropped_dir = cropped_dir or '/kaggle/input/fsbi-ff-data/cropped_faces'
 
         video_folders = sorted(os.listdir(cropped_dir))
-        if phase == 'train':
+
+        if debug:
+            video_folders = video_folders[:1]
+        elif phase == 'train':
             video_folders = video_folders[:720]
         elif phase == 'val':
             video_folders = video_folders[720:860]
-        elif phase == 'stress':
-            video_folders = video_folders[:1]
         else:
             video_folders = video_folders[860:]
+
+        
 
         self.image_list = []
         for folder in video_folders:
