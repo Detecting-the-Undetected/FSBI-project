@@ -17,8 +17,8 @@ class ESBI_Dataset(Dataset):
         self.m = mode
         
         # Windows Absolute Paths
-        self.path_lm = r'D:\major project\FSBI-main\data\FaceForensics++\landmarks'
-        cropped_dir = r'D:\major project\FSBI-main\data\FaceForensics++\cropped_faces'
+        self.path_lm = '/kaggle/input/fsbi-ff-data/landmarks'
+        cropped_dir = '/kaggle/input/fsbi-ff-data/cropped_faces'
         
         video_folders = sorted(os.listdir(cropped_dir))
         if phase == 'train':
