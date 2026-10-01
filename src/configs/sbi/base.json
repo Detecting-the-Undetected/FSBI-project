@@ -1,5 +1,5 @@
 {
     "epoch": 1,
-    "batch_size": 12,
+    "batch_size": 32,
     "image_size": 380
 }
