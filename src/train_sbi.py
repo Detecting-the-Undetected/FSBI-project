@@ -112,10 +112,13 @@ def main(args):
     # Initialize Model & Optimizer
     model = Detector()
 
-    # SPEED FIX: channels_last memory format gives EfficientNet a real speedup
-    # on modern NVIDIA GPUs (uses tensor cores more effectively) with no
-    # accuracy cost.
-    model = model.to(device, memory_format=torch.channels_last)
+    # REVERTED: channels_last caused "FIND was unable to find an engine to execute
+    # this computation" on EfficientNet's depthwise convolutions — this is a known
+    # PyTorch/cuDNN incompatibility between channels_last memory format and
+    # depthwise/grouped convolutions on certain cuDNN versions. Depthwise convs
+    # (which EfficientNet is full of) also benefit far less from channels_last
+    # than regular convolutions do, so this isn't a big loss.
+    model = model.to(device)
 
     # NOTE: torch.compile was tried here and REMOVED. It only intercepts
     # model(x)/model.forward(), not model.training_step(). Since SAM's
@@ -177,8 +180,7 @@ def main(args):
         
         # Training Phase
         for step, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Train]")):
-            # SPEED FIX: keep tensors in channels_last on the way to the GPU too.
-            img = data['img'].to(device, non_blocking=True).float().to(memory_format=torch.channels_last)
+            img = data['img'].to(device, non_blocking=True).float()
             target = data['label'].to(device, non_blocking=True).long()
             
             # NOTE: removed the redundant model.optimizer.zero_grad() that used to
@@ -229,7 +231,7 @@ def main(args):
         output_dict, target_dict = [], []
         
         for step, data in enumerate(tqdm(val_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Val]")):
-            img = data['img'].to(device, non_blocking=True).float().to(memory_format=torch.channels_last)
+            img = data['img'].to(device, non_blocking=True).float()
             target = data['label'].to(device, non_blocking=True).long()
             
             with torch.no_grad():
