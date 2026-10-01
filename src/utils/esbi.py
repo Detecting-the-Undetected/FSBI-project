@@ -27,9 +27,9 @@ class ESBI_Dataset(Dataset):
         if debug:
             video_folders = video_folders[:1]
         elif phase == 'train':
-            video_folders = video_folders[:300]
+            video_folders = video_folders[:150]
         elif phase == 'val':
-            video_folders = video_folders[300:400]
+            video_folders = video_folders[150:201]
         else:
             video_folders = video_folders[860:]
 
