@@ -1,5 +1,5 @@
 {
-    "epoch": 10,
+    "epoch": 5,
     "batch_size": 16,
     "image_size": 380,
     "cropped_dir": "/kaggle/input/datasets/brutalrb/fsbi-ff-data/cropped_faces",
