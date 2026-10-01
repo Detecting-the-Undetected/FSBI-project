@@ -46,6 +46,22 @@ def main(args):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # PORTABILITY FIX: bf16 isn't supported at all on Turing-class GPUs (e.g.
+    # Kaggle's free T4) — cuDNN has zero "engines" for bf16 convolutions there,
+    # which is what caused "FIND was unable to find an engine to execute this
+    # computation". Ampere/Ada GPUs (e.g. your local RTX 4060) support bf16
+    # natively and it's the safer, non-underflowing choice there. Pick whichever
+    # the actual hardware supports at runtime instead of hardcoding one.
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        amp_dtype = torch.bfloat16
+        print("[INFO] Using bf16 autocast (hardware supports it).")
+    else:
+        amp_dtype = torch.float16
+        print("[INFO] bf16 not supported on this GPU — falling back to fp16 autocast. "
+              "Note: without a GradScaler (incompatible with SAM's internal double "
+              "backward), fp16 gradients can underflow on some batches — watch for "
+              "NaN losses or the ROC AUC 'scores must sum to 1.0' warning returning.")
+
     # Force 380x380 to match paper benchmark if omitted in config
     image_size = cfg.get('image_size', 380) 
     batch_size = cfg['batch_size']
@@ -57,7 +73,7 @@ def main(args):
     # changing base.json, not the dataset class.
     cropped_dir = cfg.get('cropped_dir')
     landmark_dir = cfg.get('landmark_dir')
-    train_dataset_esbi = ESBI_Dataset(phase=cfg.get('phase'), image_size=image_size, wavelet=args.wavelet, mode=args.mode,
+    train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
                                        cropped_dir=cropped_dir, landmark_dir=landmark_dir)
     val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
                                      cropped_dir=cropped_dir, landmark_dir=landmark_dir)
@@ -187,7 +203,7 @@ def main(args):
                 # isn't hardware-accelerated the way it is on Ampere/Ada (e.g. your
                 # local RTX 4060), so you may not see a speed win on Kaggle's T4,
                 # but you will get correct, stable training either way.
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                with torch.amp.autocast('cuda', dtype=amp_dtype):
                     output = model.training_step(img, target)
                     loss = criterion(output, target)
             except torch.cuda.OutOfMemoryError:
@@ -217,7 +233,7 @@ def main(args):
             target = data['label'].to(device, non_blocking=True).long()
             
             with torch.no_grad():
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                with torch.amp.autocast('cuda', dtype=amp_dtype):
                     output = model(img)
                     loss = criterion(output, target)
             
