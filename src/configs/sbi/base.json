@@ -1,5 +1,7 @@
 {
-    "epoch": 1,
-    "batch_size": 12,
-    "image_size": 380
+    "epoch": 5,
+    "batch_size": 16,
+    "image_size": 380,
+    "cropped_dir": "/kaggle/input/fsbi-ff-data/cropped_faces",
+    "landmark_dir": "/kaggle/input/fsbi-ff-data/landmarks"
 }
