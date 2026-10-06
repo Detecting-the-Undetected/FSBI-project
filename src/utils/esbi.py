@@ -17,30 +17,35 @@ class ESBI_Dataset(Dataset):
         self.w = wavelet
         self.m = mode
 
-        # Paths are now passable as arguments (Kaggle vs local), falling back to
-        # the Kaggle dataset mount if not explicitly provided.
         self.path_lm = landmark_dir or '/kaggle/input/fsbi-ff-data/landmarks'
         cropped_dir = cropped_dir or '/kaggle/input/fsbi-ff-data/cropped_faces'
 
         video_folders = sorted(os.listdir(cropped_dir))
+        n_total = len(video_folders)
+
+        # FIX: splits are now percentage-based instead of hardcoded indices
+        # (720/860) that silently broke / returned empty splits whenever the
+        # dataset size changed (e.g. when you shrank it for faster iteration).
+        # 80% train / 10% val / 10% test, by video count.
+        n_train = int(n_total * 0.8)
+        n_val = int(n_total * 0.1)
 
         if debug:
             video_folders = video_folders[:1]
         elif phase == 'train':
-            video_folders = video_folders[:150]
+            video_folders = video_folders[:n_train]
         elif phase == 'val':
-            video_folders = video_folders[150:201]
+            video_folders = video_folders[n_train:n_train + n_val]
         else:
-            video_folders = video_folders[860:]
-
-        
+            video_folders = video_folders[n_train + n_val:]
 
         self.image_list = []
         for folder in video_folders:
             frames = sorted(glob(os.path.join(cropped_dir, folder, '*.jpg')))
             self.image_list.extend(frames)
 
-        print(f'ESBI({phase}): Found {len(self.image_list)} images in {len(video_folders)} videos.')
+        print(f'ESBI({phase}): Found {len(self.image_list)} images in {len(video_folders)} videos '
+              f'(out of {n_total} total videos found in {cropped_dir}).')
 
     def get_dwt_rgb(self, x):
         """
@@ -48,9 +53,6 @@ class ESBI_Dataset(Dataset):
         for each RGB channel, take the DWT approximate coefficient (LL), resize
         it back to the original resolution, and average it with the original
         channel. Stack the three fused channels depthwise.
-
-        x: HxWx3 float32 array in [0, 1].
-        Returns: 3xHxW float32 array (channel-first, for PyTorch).
         """
         h, w = x.shape[:2]
         fused_channels = []
@@ -72,7 +74,6 @@ class ESBI_Dataset(Dataset):
             mask = np.ones_like(img[:,:,0]) # Fallback
             
         source = img.copy() 
-        # Apply a slight color shift to the source to create an artifact
         source = cv2.GaussianBlur(source, (5,5), 0)
         img_blended = (img * (1 - mask[:,:,None]) + source * mask[:,:,None]).astype(np.uint8)
         return img, img_blended, mask
@@ -93,7 +94,6 @@ class ESBI_Dataset(Dataset):
                 if landmark.ndim == 3: landmark = landmark[0]
                 landmark = np.array(landmark).reshape(-1, 2)
 
-                # Assign Class 1 or 2 for the fake image
                 fake_type = 1 if random.random() < 0.5 else 2
                 img_r, img_f, _ = self.self_blending(img, landmark, label=fake_type)
                 
@@ -108,7 +108,6 @@ class ESBI_Dataset(Dataset):
 
     def collate_fn(self, batch):
         img_f, img_r, fake_types = zip(*batch)
-        # Class 0: Real | Class 1: Swap | Class 2: Reenactment
         imgs = torch.cat([torch.tensor(np.array(img_r)), torch.tensor(np.array(img_f))], 0)
         labels = torch.tensor([0]*len(img_r) + list(fake_types))
         return {'img': imgs, 'label': labels}
