@@ -1,7 +1,9 @@
 import os
 import sys
+import time
 import random
 import argparse
+import traceback
 from datetime import datetime
 from tqdm import tqdm
 
@@ -22,6 +24,16 @@ def compute_accuracy(pred, true):
     pred_idx = pred.argmax(dim=1).cpu().data.numpy()
     true_idx = true.cpu().numpy()
     return (pred_idx == true_idx).mean()
+
+def save_checkpoint_atomic(state, path):
+    """
+    Save to a .tmp file first, then atomically rename into place. This avoids
+    a corrupted/truncated .tar file if the process is killed (OOM, time budget,
+    session end) mid-write — the real path only ever points at a complete file.
+    """
+    tmp_path = path + ".tmp"
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, path)
 
 def main(args):
     cfg = load_json(args.config)
@@ -73,11 +85,10 @@ def main(args):
     # changing base.json, not the dataset class.
     cropped_dir = cfg.get('cropped_dir')
     landmark_dir = cfg.get('landmark_dir')
-    debug = cfg.get('debug')
     train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
+                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir)
     val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
+                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir)
 
     # SPEED FIX: Ryzen 5 9600X has 6 cores / 12 threads. 4 workers was leaving
     # capacity unused if the dataloader (image decode + wavelet transform) is
@@ -172,123 +183,168 @@ def main(args):
     n_weight = 5
     last_val_auc = 0.0
 
+    # SINGLE-GPU-DAY FIX: track wall-clock time so training stops cleanly within
+    # a fixed access window, instead of guessing an epoch count in advance and
+    # either wasting GPU time (too few epochs) or getting killed mid-epoch with
+    # nothing extra saved (too many epochs). Pass --max-hours on the command line.
+    run_start_time = time.time()
+    latest_checkpoint_path = os.path.join(save_path, 'weights', 'latest.tar')
+
     # Main Training Loop
     for epoch in range(start_epoch, n_epoch):
-        np.random.seed(seed + epoch)
-        train_loss = 0.0
-        train_acc = 0.0
-        model.train()
-        
-        # Training Phase
-        for step, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Train]")):
-            img = data['img'].to(device, non_blocking=True).float()
-            target = data['label'].to(device, non_blocking=True).long()
-            
-            # NOTE: removed the redundant model.optimizer.zero_grad() that used to
-            # be here — model.training_step() already calls it internally at the
-            # start of each of SAM's two steps, so this was a harmless no-op.
+        if args.max_hours is not None:
+            elapsed_hours = (time.time() - run_start_time) / 3600.0
+            if elapsed_hours >= args.max_hours:
+                print(f"\n[TIME BUDGET] {elapsed_hours:.2f}h elapsed, budget was {args.max_hours}h. "
+                      f"Stopping before epoch {epoch+1} — latest checkpoint is already saved at "
+                      f"{latest_checkpoint_path}\n")
+                break
 
-            # NOTE: model.training_step() runs SAM's two required forward/backward
-            # passes AND both optimizer.first_step()/second_step() calls internally
-            # (see model.py). It already updates the weights. We only recompute the
-            # loss here for logging — we must NOT call .backward()/optimizer.step()
-            # again, since that graph has already been freed by the internal
-            # backward() calls (this was causing the "backward through the graph a
-            # second time" crash).
-            try:
-                # SPEED/STABILITY FIX: switched from fp16 to bf16 autocast. fp16
-                # has a narrow dynamic range and without a GradScaler (which we
-                # can't cleanly use here because SAM calls backward() internally,
-                # twice, inside training_step) gradients can silently underflow
-                # to zero, hurting convergence. bf16 has the same exponent range
-                # as fp32, so it doesn't need loss scaling at all and is numerically
-                # safe here. Note: on Turing-class GPUs (e.g. Kaggle's T4) bf16
-                # isn't hardware-accelerated the way it is on Ampere/Ada (e.g. your
-                # local RTX 4060), so you may not see a speed win on Kaggle's T4,
-                # but you will get correct, stable training either way.
-                with torch.amp.autocast('cuda', dtype=amp_dtype):
-                    output = model.training_step(img, target)
-                    loss = criterion(output, target)
-            except torch.cuda.OutOfMemoryError:
-                print(f"\n[OOM] Ran out of VRAM at batch_size in config. Lower it in base.json and restart.")
-                torch.cuda.empty_cache()
-                raise
-
-            train_loss += loss.item()
-            acc = compute_accuracy(F.log_softmax(output, dim=1), target)
-            train_acc += acc
-            
-        train_losses_avg = train_loss / len(train_loader)
-        train_accs_avg = train_acc / len(train_loader)
-
-        log_text = "Epoch {}/{} | train loss: {:.4f}, train acc: {:.4f}, ".format(
-            epoch + 1, n_epoch, train_losses_avg, train_accs_avg
-        )
-        lr_scheduler.step()
-
-        # Validation Phase
-        model.eval()
-        val_acc, val_loss = 0.0, 0.0
-        output_dict, target_dict = [], []
-        
-        for step, data in enumerate(tqdm(val_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Val]")):
-            img = data['img'].to(device, non_blocking=True).float()
-            target = data['label'].to(device, non_blocking=True).long()
-            
-            with torch.no_grad():
-                with torch.amp.autocast('cuda', dtype=amp_dtype):
-                    output = model(img)
-                    loss = criterion(output, target)
-            
-            val_loss += loss.item()
-            val_acc += compute_accuracy(F.log_softmax(output, dim=1), target)
-            
-            # FIX: cast to float32 before softmax. Computing softmax in fp16/bf16
-            # and feeding the result straight to sklearn can produce rows that
-            # don't sum to exactly 1.0 due to low-precision rounding, which is
-            # what caused the "Target scores need to be probabilities" warning.
-            output_dict.extend(output.float().softmax(1).cpu().data.numpy().tolist())
-            target_dict.extend(target.cpu().data.numpy().tolist())
-            
-        val_losses_avg = val_loss / len(val_loader)
-        val_accs_avg = val_acc / len(val_loader)
-        
-        # Safe Multi-Class ROC AUC Calculation
         try:
-            val_auc = float(roc_auc_score(target_dict, output_dict, multi_class='ovr', labels=[0, 1, 2]))
-        except Exception as e:
-            print(f"\n[WARNING] ROC AUC computation error on epoch {epoch+1}: {e}")
-            val_auc = float(val_accs_avg)
+            np.random.seed(seed + epoch)
+            train_loss = 0.0
+            train_acc = 0.0
+            model.train()
         
-        log_text += "val loss: {:.4f}, val acc: {:.4f}, val auc: {:.4f}".format(
-            val_losses_avg, val_accs_avg, val_auc
-        )
+            # Training Phase
+            for step, data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Train]")):
+                img = data['img'].to(device, non_blocking=True).float()
+                target = data['label'].to(device, non_blocking=True).long()
+            
+                # NOTE: removed the redundant model.optimizer.zero_grad() that used to
+                # be here — model.training_step() already calls it internally at the
+                # start of each of SAM's two steps, so this was a harmless no-op.
 
-        # Weight Checkpoint Saving
-        save_model_path = os.path.join(save_path + 'weights/', "{}_{:.4f}_val.tar".format(epoch + 1, val_auc))
-        if len(weight_dict) < n_weight:
-            weight_dict[save_model_path] = val_auc
-            torch.save({"model": model.state_dict(), "optimizer": model.optimizer.state_dict(), "epoch": epoch}, save_model_path)
-            last_val_auc = min([weight_dict[k] for k in weight_dict])
-        elif val_auc >= last_val_auc:
-            for k in list(weight_dict.keys()):
-                if weight_dict[k] == last_val_auc:
-                    del weight_dict[k]
-                    if os.path.exists(k):
-                        try:
-                            os.remove(k)
-                        except OSError:
-                            pass
-                    break
-            weight_dict[save_model_path] = val_auc
-            torch.save({"model": model.state_dict(), "optimizer": model.optimizer.state_dict(), "epoch": epoch}, save_model_path)
-            last_val_auc = min([weight_dict[k] for k in weight_dict])
+                # NOTE: model.training_step() runs SAM's two required forward/backward
+                # passes AND both optimizer.first_step()/second_step() calls internally
+                # (see model.py). It already updates the weights. We only recompute the
+                # loss here for logging — we must NOT call .backward()/optimizer.step()
+                # again, since that graph has already been freed by the internal
+                # backward() calls (this was causing the "backward through the graph a
+                # second time" crash).
+                try:
+                    # SPEED/STABILITY FIX: switched from fp16 to bf16 autocast. fp16
+                    # has a narrow dynamic range and without a GradScaler (which we
+                    # can't cleanly use here because SAM calls backward() internally,
+                    # twice, inside training_step) gradients can silently underflow
+                    # to zero, hurting convergence. bf16 has the same exponent range
+                    # as fp32, so it doesn't need loss scaling at all and is numerically
+                    # safe here. Note: on Turing-class GPUs (e.g. Kaggle's T4) bf16
+                    # isn't hardware-accelerated the way it is on Ampere/Ada (e.g. your
+                    # local RTX 4060), so you may not see a speed win on Kaggle's T4,
+                    # but you will get correct, stable training either way.
+                    with torch.amp.autocast('cuda', dtype=amp_dtype):
+                        output = model.training_step(img, target)
+                        loss = criterion(output, target)
+                except torch.cuda.OutOfMemoryError:
+                    print(f"\n[OOM] Ran out of VRAM at batch_size in config. Lower it in base.json and restart.")
+                    torch.cuda.empty_cache()
+                    raise
+
+                train_loss += loss.item()
+                acc = compute_accuracy(F.log_softmax(output, dim=1), target)
+                train_acc += acc
+            
+            train_losses_avg = train_loss / len(train_loader)
+            train_accs_avg = train_acc / len(train_loader)
+
+            log_text = "Epoch {}/{} | train loss: {:.4f}, train acc: {:.4f}, ".format(
+                epoch + 1, n_epoch, train_losses_avg, train_accs_avg
+            )
+            lr_scheduler.step()
+
+            # Validation Phase
+            model.eval()
+            val_acc, val_loss = 0.0, 0.0
+            output_dict, target_dict = [], []
         
-        logger.info(log_text)
-        sys.stdout.flush()
+            for step, data in enumerate(tqdm(val_loader, desc=f"Epoch {epoch+1}/{n_epoch} [Val]")):
+                img = data['img'].to(device, non_blocking=True).float()
+                target = data['label'].to(device, non_blocking=True).long()
+            
+                with torch.no_grad():
+                    with torch.amp.autocast('cuda', dtype=amp_dtype):
+                        output = model(img)
+                        loss = criterion(output, target)
+            
+                val_loss += loss.item()
+                val_acc += compute_accuracy(F.log_softmax(output, dim=1), target)
+            
+                # FIX: cast to float32 before softmax. Computing softmax in fp16/bf16
+                # and feeding the result straight to sklearn can produce rows that
+                # don't sum to exactly 1.0 due to low-precision rounding, which is
+                # what caused the "Target scores need to be probabilities" warning.
+                output_dict.extend(output.float().softmax(1).cpu().data.numpy().tolist())
+                target_dict.extend(target.cpu().data.numpy().tolist())
+            
+            val_losses_avg = val_loss / len(val_loader)
+            val_accs_avg = val_acc / len(val_loader)
         
-        current_lr = model.optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch+1} Complete | Current LR: {current_lr:.6f}\n")
+            # Safe Multi-Class ROC AUC Calculation
+            try:
+                val_auc = float(roc_auc_score(target_dict, output_dict, multi_class='ovr', labels=[0, 1, 2]))
+            except Exception as e:
+                print(f"\n[WARNING] ROC AUC computation error on epoch {epoch+1}: {e}")
+                val_auc = float(val_accs_avg)
+        
+            log_text += "val loss: {:.4f}, val acc: {:.4f}, val auc: {:.4f}".format(
+                val_losses_avg, val_accs_avg, val_auc
+            )
+
+            # Weight Checkpoint Saving
+            save_model_path = os.path.join(save_path + 'weights/', "{}_{:.4f}_val.tar".format(epoch + 1, val_auc))
+            if len(weight_dict) < n_weight:
+                weight_dict[save_model_path] = val_auc
+                torch.save({"model": model.state_dict(), "optimizer": model.optimizer.state_dict(), "epoch": epoch}, save_model_path)
+                last_val_auc = min([weight_dict[k] for k in weight_dict])
+            elif val_auc >= last_val_auc:
+                for k in list(weight_dict.keys()):
+                    if weight_dict[k] == last_val_auc:
+                        del weight_dict[k]
+                        if os.path.exists(k):
+                            try:
+                                os.remove(k)
+                            except OSError:
+                                pass
+                        break
+                weight_dict[save_model_path] = val_auc
+                torch.save({"model": model.state_dict(), "optimizer": model.optimizer.state_dict(), "epoch": epoch}, save_model_path)
+                last_val_auc = min([weight_dict[k] for k in weight_dict])
+        
+            logger.info(log_text)
+            sys.stdout.flush()
+        
+            current_lr = model.optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch+1} Complete | Current LR: {current_lr:.6f}\n")
+
+            # SINGLE-GPU-DAY FIX: unconditional checkpoint every epoch, saved
+            # atomically, regardless of whether this epoch's AUC made the top-5.
+            # This is your real safety net for a long unattended run — even if
+            # something goes wrong next epoch, you always have the most recent
+            # complete state to resume from or submit.
+            save_checkpoint_atomic(
+                {"model": model.state_dict(), "optimizer": model.optimizer.state_dict(), "epoch": epoch},
+                latest_checkpoint_path
+            )
+
+        except Exception as e:
+            # SINGLE-GPU-DAY FIX: an error in one epoch (a bad batch, a transient
+            # CUDA hiccup, an sklearn edge case we didn't anticipate, etc.) no
+            # longer kills the whole run silently. We log the full traceback,
+            # make sure the last fully-completed epoch's checkpoint is intact,
+            # and then stop cleanly rather than risk continuing from a corrupted
+            # or partially-updated model state.
+            print(f"\n[ERROR] Epoch {epoch+1} failed with: {e}")
+            traceback.print_exc()
+            try:
+                logger.info(f"Epoch {epoch+1} FAILED: {e}")
+            except Exception:
+                pass
+            print(f"[INFO] Most recent successfully-completed checkpoint remains at "
+                  f"{latest_checkpoint_path} (if it exists) and in output/.../weights/. "
+                  f"Stopping training loop; everything up to the last successful epoch "
+                  f"is preserved.\n")
+            break
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train / Resume ESBI Deepfake Detector")
@@ -297,6 +353,11 @@ if __name__ == '__main__':
     parser.add_argument('-w', dest='wavelet', default='sym2', help="Wavelet transform type (default: sym2)")
     parser.add_argument('-m', dest='mode', default='reflect', help="Padding mode (default: reflect)")
     parser.add_argument('-r', '--resume', dest='resume_path', default=None, help="Path to checkpoint .tar file to resume training from")
+    parser.add_argument('--max-hours', dest='max_hours', type=float, default=None,
+                         help="Wall-clock time budget in hours. If set, training stops cleanly "
+                              "(saving the latest checkpoint) once this much time has elapsed, "
+                              "even if n_epoch hasn't been reached. Use this on a one-day GPU "
+                              "access window instead of guessing an epoch count.")
     args = parser.parse_args()
     
     main(args)
