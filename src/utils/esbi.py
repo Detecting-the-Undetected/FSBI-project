@@ -23,12 +23,19 @@ class ESBI_Dataset(Dataset):
         video_folders = sorted(os.listdir(cropped_dir))
         n_total = len(video_folders)
 
-        # FIX: splits are now percentage-based instead of hardcoded indices
-        # (720/860) that silently broke / returned empty splits whenever the
-        # dataset size changed (e.g. when you shrank it for faster iteration).
-        # 80% train / 10% val / 10% test, by video count.
-        n_train = int(n_total * 0.8)
-        n_val = int(n_total * 0.1)
+        # PAPER-MATCHING SPLIT: FF++'s official/standard split is 720 train /
+        # 140 val / 140 test videos (used throughout this literature, including
+        # the FSBI paper, for comparable numbers). Use exact counts when you
+        # have the full 1000-video FF++ dataset; fall back to proportional
+        # splits (same 72/14/14 ratio) when testing on a smaller subset so
+        # nothing breaks or silently returns an empty split during development.
+        if n_total >= 1000:
+            n_train, n_val = 720, 140
+        else:
+            # Same ratio as 720/140/140, scaled to whatever subset you're
+            # currently using for fast iteration/testing.
+            n_train = int(n_total * 0.72)
+            n_val = int(n_total * 0.14)
 
         if debug:
             video_folders = video_folders[:1]
