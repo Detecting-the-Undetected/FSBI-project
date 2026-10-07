@@ -85,10 +85,14 @@ def main(args):
     # changing base.json, not the dataset class.
     cropped_dir = cfg.get('cropped_dir')
     landmark_dir = cfg.get('landmark_dir')
+    # BUG FIX: debug was read from the config dict but never actually passed
+    # to ESBI_Dataset, so "debug": true in base.json silently did nothing —
+    # the full 720-video training set still loaded every time.
+    debug = cfg.get('debug', False)
     train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir)
+                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
     val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir)
+                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
 
     # SPEED FIX: Ryzen 5 9600X has 6 cores / 12 threads. 4 workers was leaving
     # capacity unused if the dataloader (image decode + wavelet transform) is
