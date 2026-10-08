@@ -25,6 +25,9 @@ EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 BILSTM_EPOCHS="${BILSTM_EPOCHS:-50}"
 DEBUG="${DEBUG:-false}"
+TEST_LIST="${TEST_LIST:-}"
+TL_JSON=""; TL_ARG=""
+if [ -n "$TEST_LIST" ]; then TL_JSON=",\n    \"test_list\": \"$TEST_LIST\""; TL_ARG="--test-list $TEST_LIST"; fi
 EMB_DIR="$PROJECT_DIR/embeddings/$TAG"
 CFG="$PROJECT_DIR/src/configs/sbi/${TAG}_cluster.json"
 
@@ -58,7 +61,7 @@ case "$STAGE" in
     "image_size": 380,
     "cropped_dir": "$CROPPED_DIR",
     "landmark_dir": "$LANDMARK_DIR",
-    "debug": $DEBUG
+    "debug": $DEBUG$(printf "$TL_JSON")
 }
 CFGEOF
     cat "$CFG"
@@ -80,7 +83,7 @@ CFGEOF
 
   bilstm)
     python train_bilstm.py --embedding-dir "$EMB_DIR" -n "$TAG" \
-        --epochs "$BILSTM_EPOCHS" --batch-size 32 --max-hours "${BILSTM_MAX_HOURS:-4}"
+        --epochs "$BILSTM_EPOCHS" --batch-size 32 --max-hours "${BILSTM_MAX_HOURS:-4}" $TL_ARG
     ;;
 
   *)
