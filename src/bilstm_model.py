@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
+from utils.splits import split_videos
 
 
 class VideoEmbeddingDataset(Dataset):
@@ -17,22 +18,18 @@ class VideoEmbeddingDataset(Dataset):
     data leakage (the model could learn to recognize the *video*, not the
     manipulation artifact).
     """
-    def __init__(self, embedding_dir, phase='train', train_ratio=0.72, val_ratio=0.14):
+    def __init__(self, embedding_dir, phase='train', test_list=None):
         self.embedding_dir = embedding_dir
         all_files = sorted(glob.glob(os.path.join(embedding_dir, '*.npy')))
 
         # Group files by underlying video_id (strip the __real/__faceswap/__reenact suffix)
         video_ids = sorted(set(os.path.basename(f).split('__')[0] for f in all_files))
         n_total = len(video_ids)
-        n_train = int(n_total * train_ratio)
-        n_val = int(n_total * val_ratio)
 
-        if phase == 'train':
-            selected_ids = set(video_ids[:n_train])
-        elif phase == 'val':
-            selected_ids = set(video_ids[n_train:n_train + n_val])
-        else:
-            selected_ids = set(video_ids[n_train + n_val:])
+        # Same shared split as Stage 1, so a video that is "test" for the CNN is
+        # also "test" for the Bi-LSTM (no train/test leakage between stages).
+        train_ids, val_ids, test_ids = split_videos(video_ids, test_list)
+        selected_ids = set({'train': train_ids, 'val': val_ids}.get(phase, test_ids))
 
         self.files = [f for f in all_files if os.path.basename(f).split('__')[0] in selected_ids]
         print(f"VideoEmbeddingDataset({phase}): {len(self.files)} video-samples "
