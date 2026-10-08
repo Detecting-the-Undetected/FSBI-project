@@ -8,10 +8,11 @@ import cv2
 from glob import glob
 import pywt
 from utils.funcs import crop_face
+from utils.splits import split_videos
 
 class ESBI_Dataset(Dataset):
     def __init__(self, phase='train', image_size=384, n_frames=8, wavelet="sym2", mode="reflect",
-                 cropped_dir=None, landmark_dir=None, debug=False):
+                 cropped_dir=None, landmark_dir=None, debug=False, test_list=None):
         self.phase = phase
         self.image_size = (image_size, image_size)
         self.w = wavelet
@@ -23,28 +24,19 @@ class ESBI_Dataset(Dataset):
         video_folders = sorted(os.listdir(cropped_dir))
         n_total = len(video_folders)
 
-        # PAPER-MATCHING SPLIT: FF++'s official/standard split is 720 train /
-        # 140 val / 140 test videos (used throughout this literature, including
-        # the FSBI paper, for comparable numbers). Use exact counts when you
-        # have the full 1000-video FF++ dataset; fall back to proportional
-        # splits (same 72/14/14 ratio) when testing on a smaller subset so
-        # nothing breaks or silently returns an empty split during development.
-        if n_total >= 1000:
-            n_train, n_val = 720, 140
-        else:
-            # Same ratio as 720/140/140, scaled to whatever subset you're
-            # currently using for fast iteration/testing.
-            n_train = int(n_total * 0.72)
-            n_val = int(n_total * 0.14)
+        # Shared split logic (utils/splits.py) so Stage 1 and Stage 2 always agree.
+        # FF++: standard 720/140/140. Celeb-DF: pass the official
+        # List_of_testing_videos.txt via test_list and those videos are held out.
+        train_ids, val_ids, test_ids = split_videos(video_folders, test_list)
 
         if debug:
             video_folders = video_folders[:1]
         elif phase == 'train':
-            video_folders = video_folders[:n_train]
+            video_folders = train_ids
         elif phase == 'val':
-            video_folders = video_folders[n_train:n_train + n_val]
+            video_folders = val_ids
         else:
-            video_folders = video_folders[n_train + n_val:]
+            video_folders = test_ids
 
         self.image_list = []
         for folder in video_folders:
