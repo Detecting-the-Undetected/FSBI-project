@@ -89,10 +89,13 @@ def main(args):
     # to ESBI_Dataset, so "debug": true in base.json silently did nothing —
     # the full 720-video training set still loaded every time.
     debug = cfg.get('debug', False)
+    test_list = cfg.get('test_list')  # Celeb-DF official test list (optional)
     train_dataset_esbi = ESBI_Dataset(phase='train', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
+                                       cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug,
+                                       test_list=test_list)
     val_dataset_esbi = ESBI_Dataset(phase='val', image_size=image_size, wavelet=args.wavelet, mode=args.mode,
-                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug)
+                                     cropped_dir=cropped_dir, landmark_dir=landmark_dir, debug=debug,
+                                       test_list=test_list)
 
     # SPEED FIX: Ryzen 5 9600X has 6 cores / 12 threads. 4 workers was leaving
     # capacity unused if the dataloader (image decode + wavelet transform) is
@@ -101,7 +104,17 @@ def main(args):
     # PORTABILITY FIX: hardcoding a worker count tuned for your local Ryzen
     # 9600X doesn't make sense on Kaggle (which has a different CPU). Derive
     # it from the actual machine instead.
-    num_workers = min(4, os.cpu_count() or 2)
+    # CLUSTER FIX: under SLURM, os.cpu_count() reports the whole node (224 threads)
+    # not what you were allocated, so the old min(4, ...) always gave 4 workers.
+    # Per-sample SBI blending + DWT is CPU-heavy, and 4 workers would leave a fast
+    # RTX 6000 Ada idle. Use the allocation SLURM gives us (minus 2 for the main
+    # process); fall back to the old behaviour on your PC / Kaggle.
+    slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
+    if slurm_cpus:
+        num_workers = max(2, int(slurm_cpus) - 2)
+    else:
+        num_workers = min(4, os.cpu_count() or 2)
+    print(f"[INFO] DataLoader num_workers = {num_workers}")
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset_esbi, 
