@@ -30,8 +30,8 @@ def compute_accuracy(pred, true):
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    train_dataset = VideoEmbeddingDataset(args.embedding_dir, phase='train')
-    val_dataset = VideoEmbeddingDataset(args.embedding_dir, phase='val')
+    train_dataset = VideoEmbeddingDataset(args.embedding_dir, phase='train', test_list=args.test_list)
+    val_dataset = VideoEmbeddingDataset(args.embedding_dir, phase='val', test_list=args.test_list)
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                num_workers=min(4, os.cpu_count() or 2), pin_memory=True)
@@ -146,5 +146,6 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--max-hours', type=float, default=None)
+    parser.add_argument('--test-list', default=None, help="Celeb-DF List_of_testing_videos.txt (omit for FF++).")
     args = parser.parse_args()
     main(args)
