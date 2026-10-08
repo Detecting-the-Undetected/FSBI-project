@@ -92,7 +92,10 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     video_folders = sorted(os.listdir(args.cropped_dir))
-    print(f"[INFO] Found {len(video_folders)} videos in {args.cropped_dir}")
+    if args.max_videos is not None:
+        video_folders = video_folders[:args.max_videos]
+    print(f"[INFO] Processing {len(video_folders)} videos from {args.cropped_dir}"
+          + (f" (capped at --max-videos {args.max_videos})" if args.max_videos else ""))
 
     random.seed(5)  # reproducible frame sampling / blend assignment
 
@@ -157,6 +160,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', required=True, help="Where to save per-video embedding .npy files.")
     parser.add_argument('--n-frames', type=int, default=32, help="Frames per video sequence (default: 32, matching the paper's inference protocol).")
     parser.add_argument('--image-size', type=int, default=380, help="Must match the image_size the Stage 1 model was trained with.")
+    parser.add_argument('--max-videos', type=int, default=None, help="Only process the first N videos (useful for quick plumbing tests without burning GPU quota on the whole dataset).")
     parser.add_argument('--overwrite', action='store_true', help="Recompute embeddings even if the output file already exists.")
     args = parser.parse_args()
     main(args)
