@@ -12,6 +12,9 @@
 # Smoke test (tiny, run this FIRST):
 #   DEBUG=true MAX_VIDEOS=10 BILSTM_EPOCHS=2 ./launch_pipeline.sh smoke <crops> <lms> 2 0.15
 #
+# Celeb-DF: also set TEST_LIST=/path/to/List_of_testing_videos.txt to hold out the
+#   official test videos (omit for FF++).
+#
 # Env overrides: PROJECT_DIR (default ~/FSBI-project), VENV (default ~/fsbi_env)
 
 set -euo pipefail
@@ -31,6 +34,7 @@ S1_MIN=$(awk "BEGIN{printf \"%d\", ($H + 2) * 60}")
 
 EXPORTS="ALL,TAG=$TAG,CROPPED_DIR=$CROPPED_DIR,LANDMARK_DIR=$LANDMARK_DIR,PROJECT_DIR=$PROJECT_DIR,VENV=$VENV,EPOCHS=$EPOCHS,MAX_HOURS=$H,DEBUG=${DEBUG:-false},BILSTM_EPOCHS=${BILSTM_EPOCHS:-50}"
 if [ -n "${MAX_VIDEOS:-}" ]; then EXPORTS="$EXPORTS,MAX_VIDEOS=$MAX_VIDEOS"; fi
+if [ -n "${TEST_LIST:-}" ]; then EXPORTS="$EXPORTS,TEST_LIST=$TEST_LIST"; fi
 
 J1=$(sbatch --parsable --job-name="${TAG}_s1_train" --time="$S1_MIN" \
      --output="$PROJECT_DIR/logs/${TAG}_1_train_%j.out" \
