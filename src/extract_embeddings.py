@@ -20,6 +20,7 @@ Usage:
 """
 import os
 import argparse
+import zlib
 import random
 from glob import glob
 from pathlib import Path
@@ -32,6 +33,7 @@ from tqdm import tqdm
 import pywt
 
 from model import Detector
+from utils import fake_gen
 
 
 def get_dwt_rgb(x, wavelet='sym2', mode='reflect'):
@@ -45,20 +47,6 @@ def get_dwt_rgb(x, wavelet='sym2', mode='reflect'):
         fused = (LL_resized + x[:, :, c]) / 2.0
         fused_channels.append(fused)
     return np.stack(fused_channels, axis=0).astype('float32')
-
-
-def self_blend(img, landmark, label):
-    """Same blending as ESBI_Dataset.self_blending, extracted standalone so
-    this script doesn't need to instantiate a full Dataset object."""
-    target_landmark = landmark[48:68] if label == 2 else landmark
-    mask = np.zeros_like(img[:, :, 0])
-    try:
-        cv2.fillConvexPoly(mask, cv2.convexHull(target_landmark.astype(int)), 1.)
-    except Exception:
-        mask = np.ones_like(img[:, :, 0])
-    source = cv2.GaussianBlur(img.copy(), (5, 5), 0)
-    blended = (img * (1 - mask[:, :, None]) + source * mask[:, :, None]).astype(np.uint8)
-    return blended
 
 
 @torch.no_grad()
@@ -124,27 +112,20 @@ def main(args):
                 continue
 
             embeddings = []
+            # One parameter set per sequence, small per-frame drift -> a coherent forgery over time
+            seq_rng = np.random.default_rng(zlib.crc32(f"{vid}_{label}".encode()))
+            base_params = fake_gen.sample_params(seq_rng) if label != 0 else None
             for f_path in sampled_paths:
-                img = np.array(Image.open(f_path))
-
+                img = np.array(Image.open(f_path).convert('RGB'))
                 if label != 0:
-                    frame_name = os.path.basename(f_path).replace('.jpg', '.npy')
-                    lm_path = os.path.join(args.landmark_dir, vid, frame_name)
-                    if not os.path.exists(lm_path):
-                        img_to_embed = img  # fall back to unblended frame if no landmark
-                    else:
-                        raw = np.load(lm_path, allow_pickle=True)
-                        landmark = raw.item() if raw.dtype == 'O' or raw.ndim == 0 else raw
-                        if landmark.ndim == 3:
-                            landmark = landmark[0]
-                        landmark = np.array(landmark).reshape(-1, 2)
-                        img_to_embed = self_blend(img, landmark, label)
+                    stem = os.path.splitext(os.path.basename(f_path))[0]
+                    landmark = fake_gen.load_landmarks(args.landmark_dir, vid, stem, img.shape[0])
+                    img_to_embed = fake_gen.make_fake(
+                        img, landmark, label, fake_gen.jitter_params(base_params, seq_rng))
                 else:
                     img_to_embed = img
-
                 img_float = img_to_embed.astype('float32') / 255.0
-                emb = embed_frame(model, img_float, device, args.image_size)
-                embeddings.append(emb)
+                embeddings.append(embed_frame(model, img_float, device, args.image_size))
 
             seq = np.stack(embeddings, axis=0)  # (n_frames, embed_dim)
             np.save(out_path, {'embeddings': seq, 'label': label, 'video_id': vid})
