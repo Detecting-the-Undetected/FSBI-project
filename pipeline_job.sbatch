@@ -5,15 +5,16 @@
 #SBATCH --mem=64G
 # Time, job-name and log paths are set by launch_pipeline.sh at submit time.
 #
-# One script, three stages, selected by the STAGE env var:
+# One script, four stages, selected by the STAGE env var:
 #   train_sbi : Stage 1, FSBI backbone training (time-boxed via --max-hours)
 #   extract   : run the best Stage 1 checkpoint over every video -> embeddings
 #   bilstm    : Stage 2, Bi-LSTM training on those embeddings
+#   evaluate  : (Celeb-DF only) video-level AUC on the official test list -> eval_results.json
 #
 # Required env (set by launch_pipeline.sh):
 #   STAGE TAG CROPPED_DIR LANDMARK_DIR PROJECT_DIR VENV
 # Optional env:
-#   EPOCHS BATCH_SIZE MAX_HOURS BILSTM_EPOCHS DEBUG MAX_VIDEOS
+#   EPOCHS BATCH_SIZE MAX_HOURS BILSTM_EPOCHS DEBUG MAX_VIDEOS TEST_LIST FAKE_CROPPED_DIR
 
 set -euo pipefail
 
@@ -84,6 +85,19 @@ CFGEOF
   bilstm)
     python train_bilstm.py --embedding-dir "$EMB_DIR" -n "$TAG" \
         --epochs "$BILSTM_EPOCHS" --batch-size 32 --max-hours "${BILSTM_MAX_HOURS:-4}" $TL_ARG
+    ;;
+
+  evaluate)
+    [ -n "$TEST_LIST" ] && [ -n "${FAKE_CROPPED_DIR:-}" ] || { echo "[PIPELINE][ERROR] evaluate needs TEST_LIST and FAKE_CROPPED_DIR"; exit 1; }
+    S1_RUN=$(latest_run_dir)
+    B_RUN=$(ls -dt output/bilstm_${TAG}_*/ 2>/dev/null | head -1)
+    [ -n "$S1_RUN" ] && [ -n "$B_RUN" ] || { echo "[PIPELINE][ERROR] missing Stage 1 or Bi-LSTM run dir for $TAG"; exit 1; }
+    S1_CKPT=$(best_checkpoint "$S1_RUN"); B_CKPT=$(best_checkpoint "$B_RUN")
+    echo "[PIPELINE] stage1=$S1_CKPT bilstm=$B_CKPT"
+    python evaluate_video_auc.py --stage1-ckpt "$S1_CKPT" --bilstm-ckpt "$B_CKPT" \
+        --test-list "$TEST_LIST" --real-cropped-dir "$CROPPED_DIR" \
+        --fake-cropped-dir "$FAKE_CROPPED_DIR" --hidden-dim 256 \
+        --output-json "$PROJECT_DIR/logs/${TAG}_eval_results.json"
     ;;
 
   *)
