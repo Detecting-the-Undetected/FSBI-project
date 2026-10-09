@@ -77,8 +77,7 @@ class ESBI_Dataset(Dataset):
 
                 rng = np.random.default_rng()
                 fake_type = fake_gen.FACESWAP if rng.random() < 0.5 else fake_gen.REENACT
-                img_f = fake_gen.make_fake(img, landmark, fake_type, fake_gen.sample_params(rng))
-                img_r = img
+                img_r, img_f = fake_gen.make_pair(img, landmark, fake_type, fake_gen.sample_params(rng))
                 if self.phase == 'train':   # same augmentation on real and fake (paper)
                     img_f = fake_gen.post_augment(img_f, rng)
                     img_r = fake_gen.post_augment(img_r, rng)
