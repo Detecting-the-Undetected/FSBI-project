@@ -1,8 +1,8 @@
 {
-    "epoch": 40,
+    "epoch": 15,
     "batch_size": 16,
     "image_size": 380,
     "cropped_dir": "/kaggle/input/datasets/brutalrb/fsbi-ff-data/cropped_faces",
     "landmark_dir": "/kaggle/input/datasets/brutalrb/fsbi-ff-data/landmarks",
-    "debug": true
+    "debug": false
 }
