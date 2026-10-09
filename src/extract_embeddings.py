@@ -122,8 +122,17 @@ def main(args):
                 if label != 0:
                     stem = os.path.splitext(os.path.basename(f_path))[0]
                     landmark = fake_gen.load_landmarks(args.landmark_dir, vid, stem, img.shape[0])
-                    img_to_embed = fake_gen.make_fake(
-                        img, landmark, label, fake_gen.jitter_params(base_params, seq_rng))
+                    img_to_embed = None
+                    for attempt in range(6):   # a degenerate draw is re-rolled, never crashes the run
+                        pr = fake_gen.jitter_params(base_params, seq_rng) if attempt == 0 \
+                            else dict(fake_gen.sample_params(seq_rng), on_target=False)
+                        try:
+                            img_to_embed = fake_gen.make_fake(img, landmark, label, pr)
+                            break
+                        except fake_gen.FakeGenError:
+                            continue
+                    if img_to_embed is None:
+                        raise RuntimeError(f"could not forge {vid}/{stem} (type {label}); check landmarks")
                 else:
                     img_to_embed = img
                 img_float = img_to_embed.astype('float32') / 255.0
