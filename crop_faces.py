@@ -18,6 +18,11 @@ def main(args):
     frame_dir = Path(args.frame_dir)
     landmark_dir = Path(args.landmark_dir)
     output_dir = Path(args.output_dir)
+    crop_lm_dir = Path(args.crop_landmark_dir) if args.crop_landmark_dir else None
+    if crop_lm_dir:
+        crop_lm_dir.mkdir(parents=True, exist_ok=True)
+        # marker tells fake_gen.py these landmarks are already in crop-image pixel coordinates
+        (crop_lm_dir / 'COORDS_CROP.txt').write_text('landmarks in crop-image pixel coordinates\n')
 
     video_folders = [f for f in frame_dir.iterdir() if f.is_dir()]
     print(f"Cropping faces for {len(video_folders)} videos...")
@@ -46,6 +51,15 @@ def main(args):
             face = cv2.resize(face, (args.crop_size, args.crop_size))
             cv2.imwrite(str(save_path / f_path.name), face)
 
+            if crop_lm_dir:
+                # exact transform: subtract the (clamped) crop origin, scale to the crop size
+                sx = args.crop_size / float(x2 - x1)
+                sy = args.crop_size / float(y2 - y1)
+                lm_crop = (landmarks.reshape(-1, 2) - np.array([x1, y1])) * np.array([sx, sy])
+                out_lm = crop_lm_dir / v_folder.name
+                out_lm.mkdir(parents=True, exist_ok=True)
+                np.save(str(out_lm / f"{f_path.stem}.npy"), lm_crop.astype(np.float32))
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Crop aligned faces from frames using detected landmarks.")
     parser.add_argument('--frame-dir', required=True, help="Folder of extracted frames (one subfolder per video).")
@@ -53,5 +67,6 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', required=True, help="Where to save cropped face images.")
     parser.add_argument('--crop-size', type=int, default=384, help="Output crop resolution (default: 384).")
     parser.add_argument('--margin', type=float, default=1.3, help="Crop box margin multiplier (default: 1.3).")
+    parser.add_argument('--crop-landmark-dir', default=None, help="If set, also save landmarks transformed into crop coordinates here (REQUIRED for correct fake generation; point training at this folder).")
     args = parser.parse_args()
     main(args)
