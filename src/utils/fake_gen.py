@@ -197,7 +197,11 @@ def make_pair(img, lm, fake_type, p):
     mask = _elastic(mask, p['elastic_seed'])
     m_full, m = _smooth_blend_mask(mask, p)
     if m_full.sum() / (h * w) < MIN_MASK_FRAC / 2:
-        raise FakeGenError("blend mask vanished after smoothing")
+        # small masks (mouth) can be erased by large kernels: retry once with gentle smoothing
+        p = dict(p, k1=5, k2=5, sigma2=min(p['sigma2'], 8.0))
+        m_full, m = _smooth_blend_mask(mask, p)
+        if m_full.sum() / (h * w) < MIN_MASK_FRAC / 2:
+            raise FakeGenError("blend mask vanished after smoothing")
     m = m[..., None]
     fake = np.clip(source.astype(np.float32) * m + target.astype(np.float32) * (1 - m),
                    0, 255).astype(np.uint8)
