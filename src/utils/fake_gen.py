@@ -168,9 +168,17 @@ def _smooth_blend_mask(mask, p):
 
 # ----------------------------------------------------------------------------- public API
 def make_fake(img, lm, fake_type, p):
+    """Fake only (see make_pair for the matching real image)."""
+    return make_pair(img, lm, fake_type, p)[1]
+
+
+def make_pair(img, lm, fake_type, p):
     """img: HxWx3 uint8 RGB crop. lm: landmarks in THIS image's pixel coordinates.
     fake_type 1 = FaceSwap (whole-face hull), 2 = Reenactment (mouth hull).
-    Returns the forged uint8 image, or raises FakeGenError."""
+    Returns (real, fake) uint8 images, or raises FakeGenError. When the colour transform is
+    applied to the TARGET (p['on_target']) the returned real image carries the same transform,
+    exactly like the original SBI code, so a global colour shift is never a shortcut that
+    separates real from fake."""
     if lm.shape[0] < 68:
         raise FakeGenError(f"expected 68 landmarks, got {lm.shape[0]}")
     h, w = img.shape[:2]
@@ -191,8 +199,9 @@ def make_fake(img, lm, fake_type, p):
     if m_full.sum() / (h * w) < MIN_MASK_FRAC / 2:
         raise FakeGenError("blend mask vanished after smoothing")
     m = m[..., None]
-    return np.clip(source.astype(np.float32) * m + target.astype(np.float32) * (1 - m),
+    fake = np.clip(source.astype(np.float32) * m + target.astype(np.float32) * (1 - m),
                    0, 255).astype(np.uint8)
+    return target, fake
 
 
 def post_augment(img, rng, p_compress=0.5):
