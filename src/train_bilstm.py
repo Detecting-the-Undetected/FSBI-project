@@ -93,8 +93,8 @@ def main(args):
                     val_acc += compute_accuracy(output, label)
                     output_dict.extend(output.float().softmax(1).cpu().numpy().tolist())
                     target_dict.extend(label.cpu().numpy().tolist())
-            val_loss /= len(val_loader)
-            val_acc /= len(val_loader)
+            val_loss /= max(1, len(val_loader))
+            val_acc /= max(1, len(val_loader))
 
             try:
                 val_auc = float(roc_auc_score(target_dict, output_dict, multi_class='ovr', labels=[0, 1, 2]))
