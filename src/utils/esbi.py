@@ -9,6 +9,7 @@ from glob import glob
 import pywt
 from utils.funcs import crop_face
 from utils.splits import split_videos
+from utils import fake_gen
 
 class ESBI_Dataset(Dataset):
     def __init__(self, phase='train', image_size=384, n_frames=8, wavelet="sym2", mode="reflect",
@@ -63,47 +64,35 @@ class ESBI_Dataset(Dataset):
         img_fsbi = np.stack(fused_channels, axis=0)  # (3, H, W)
         return img_fsbi.astype('float32')
 
-    def self_blending(self, img, landmark, label=None):
-        # Class 2: Reenactment (Mouth/Nose only) | Class 1: FaceSwap (Full)
-        target_landmark = landmark[48:68] if label == 2 else landmark
-        mask = np.zeros_like(img[:,:,0])
-        try:
-            cv2.fillConvexPoly(mask, cv2.convexHull(target_landmark.astype(int)), 1.)
-        except:
-            mask = np.ones_like(img[:,:,0]) # Fallback
-            
-        source = img.copy() 
-        source = cv2.GaussianBlur(source, (5,5), 0)
-        img_blended = (img * (1 - mask[:,:,None]) + source * mask[:,:,None]).astype(np.uint8)
-        return img, img_blended, mask
-
     def __getitem__(self, idx):
         attempts = 0
         while attempts < 10:
             try:
                 filename = self.image_list[idx]
-                img = np.array(Image.open(filename))
-                
+                img = np.array(Image.open(filename).convert('RGB'))
                 vid = os.path.basename(os.path.dirname(filename))
-                frame = os.path.basename(filename).replace('.jpg', '.npy')
-                npy_path = os.path.join(self.path_lm, vid, frame)
+                stem = os.path.splitext(os.path.basename(filename))[0]
+                # landmarks in THIS crop's pixel coordinates (see utils/fake_gen.py)
+                landmark = fake_gen.load_landmarks(self.path_lm, vid, stem, img.shape[0])
 
-                raw = np.load(npy_path, allow_pickle=True)
-                landmark = raw.item() if raw.dtype == 'O' or raw.ndim == 0 else raw
-                if landmark.ndim == 3: landmark = landmark[0]
-                landmark = np.array(landmark).reshape(-1, 2)
+                rng = np.random.default_rng()
+                fake_type = fake_gen.FACESWAP if rng.random() < 0.5 else fake_gen.REENACT
+                img_f = fake_gen.make_fake(img, landmark, fake_type, fake_gen.sample_params(rng))
+                img_r = img
+                if self.phase == 'train':   # same augmentation on real and fake (paper)
+                    img_f = fake_gen.post_augment(img_f, rng)
+                    img_r = fake_gen.post_augment(img_r, rng)
 
-                fake_type = 1 if random.random() < 0.5 else 2
-                img_r, img_f, _ = self.self_blending(img, landmark, label=fake_type)
-                
                 img_f = cv2.resize(img_f, self.image_size).astype('float32') / 255
                 img_r = cv2.resize(img_r, self.image_size).astype('float32') / 255
-                
                 return self.get_dwt_rgb(img_f), self.get_dwt_rgb(img_r), fake_type
             except Exception as e:
                 attempts += 1
-                idx = random.randint(0, len(self.image_list)-1)
-        return torch.zeros(3, *self.image_size), torch.zeros(3, *self.image_size), 1
+                if attempts == 1 and not getattr(self, '_warned', False):
+                    print(f'[ESBI] sample failed ({type(e).__name__}: {e}); retrying another frame')
+                    self._warned = True
+                idx = random.randint(0, len(self.image_list) - 1)
+        raise RuntimeError('ESBI: 10 consecutive samples failed - check landmark/crop alignment')
 
     def collate_fn(self, batch):
         img_f, img_r, fake_types = zip(*batch)
