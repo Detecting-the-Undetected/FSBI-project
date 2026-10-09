@@ -115,6 +115,8 @@ def main(args):
             # One parameter set per sequence, small per-frame drift -> a coherent forgery over time
             seq_rng = np.random.default_rng(zlib.crc32(f"{vid}_{label}".encode()))
             base_params = fake_gen.sample_params(seq_rng) if label != 0 else None
+            if base_params is not None:
+                base_params['on_target'] = False   # real sequence is untouched, so never tint the whole frame
             for f_path in sampled_paths:
                 img = np.array(Image.open(f_path).convert('RGB'))
                 if label != 0:
