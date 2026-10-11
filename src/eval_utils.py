@@ -60,3 +60,47 @@ def compute_metrics(labels, scores, is_fallback):
         "mean_score_real": float(scores[labels == 0].mean()) if (labels == 0).any() else None,
         "mean_score_fake": float(scores[labels == 1].mean()) if (labels == 1).any() else None,
     }
+
+
+CLASS_NAMES = ("real", "faceswap", "reenact")
+
+
+def summarize_probs(video_probs, expected):
+    """video_probs: (n_videos, 3) 3-class probabilities per video (mean over frames, or Bi-LSTM output).
+    expected: the class index this group of videos should land in (0 real, 1 FaceSwap, 2 Reenactment)."""
+    P = np.asarray(video_probs, dtype=float).reshape(-1, 3)
+    n = len(P)
+    if n == 0:
+        return {"n_videos": 0}
+    pred = P.argmax(1)
+    fake_pred = pred != 0
+    return {
+        "n_videos": int(n),
+        "expected_class": CLASS_NAMES[expected],
+        "mean_probs": {c: float(P[:, i].mean()) for i, c in enumerate(CLASS_NAMES)},
+        "predicted_share": {c: float((pred == i).mean()) for i, c in enumerate(CLASS_NAMES)},
+        "flagged_as_fake": float((P[:, 1] + P[:, 2] > 0.5).mean()),
+        "accuracy_expected_class": float((pred == expected).mean()),
+        "type_accuracy_among_flagged": (float((pred[fake_pred] == expected).mean())
+                                        if fake_pred.any() and expected != 0 else None),
+    }
+
+
+# ----------------------------------------------------------------------------- real FF++ fakes
+# FF++ manipulation methods -> the class our 3-class head should assign them
+#   identity swaps (a different face is pasted on)      -> 1 FaceSwap
+#   reenactment (same identity, expression/mouth moved)  -> 2 Reenactment
+FFPP_METHOD_CLASS = {"Deepfakes": 1, "FaceSwap": 1, "Face2Face": 2, "NeuralTextures": 2}
+
+
+def fake_target_id(stem):
+    """FF++ fake videos are named <target>_<source> (e.g. '860_123'): the target video is the
+    background/identity the fake was built on. Returns '860'."""
+    return stem.split('_')[0]
+
+
+def select_unseen_fakes(video_stems, test_ids):
+    """Keep only fakes whose TARGET video is in the held-out test split, so the backbone never saw
+    that footage as a real training video."""
+    test_ids = set(test_ids)
+    return sorted(s for s in video_stems if fake_target_id(s) in test_ids)
