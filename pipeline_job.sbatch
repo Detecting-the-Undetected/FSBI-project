@@ -9,12 +9,13 @@
 #   train_sbi : Stage 1, FSBI backbone training (time-boxed via --max-hours)
 #   extract   : run the best Stage 1 checkpoint over every video -> embeddings
 #   bilstm    : Stage 2, Bi-LSTM training on those embeddings
-#   evaluate  : (Celeb-DF only) video-level AUC on the official test list -> eval_results.json
+#   evaluate  : video-level AUC on Celeb-DF's official test list (same-dataset or cross-dataset)
+#   evaluate_ffpp : real FF++ fakes per method + 3-class check
 #
 # Required env (set by launch_pipeline.sh):
 #   STAGE TAG CROPPED_DIR LANDMARK_DIR PROJECT_DIR VENV
 # Optional env:
-#   EPOCHS BATCH_SIZE MAX_HOURS BILSTM_EPOCHS DEBUG MAX_VIDEOS TEST_LIST FAKE_CROPPED_DIR
+#   EPOCHS BATCH_SIZE MAX_HOURS BILSTM_EPOCHS DEBUG MAX_VIDEOS TEST_LIST EVAL_TEST_LIST EVAL_REAL_DIR FAKE_CROPPED_DIR
 
 set -euo pipefail
 
@@ -88,16 +89,36 @@ CFGEOF
     ;;
 
   evaluate)
-    [ -n "$TEST_LIST" ] && [ -n "${FAKE_CROPPED_DIR:-}" ] || { echo "[PIPELINE][ERROR] evaluate needs TEST_LIST and FAKE_CROPPED_DIR"; exit 1; }
+    # Real-vs-fake video AUC on Celeb-DF's official test list.
+    #  - same-dataset run (TAG=celebdf):  TEST_LIST + FAKE_CROPPED_DIR
+    #  - cross-dataset run (TAG=ffpp, the paper's protocol): EVAL_TEST_LIST + EVAL_REAL_DIR +
+    #    FAKE_CROPPED_DIR point at Celeb-DF; the training split must NOT see that list.
+    ETL="${EVAL_TEST_LIST:-$TEST_LIST}"
+    REAL_DIR="${EVAL_REAL_DIR:-$CROPPED_DIR}"
+    [ -n "$ETL" ] && [ -n "${FAKE_CROPPED_DIR:-}" ] || { echo "[PIPELINE][ERROR] evaluate needs a test list and FAKE_CROPPED_DIR"; exit 1; }
     S1_RUN=$(latest_run_dir)
     B_RUN=$(ls -dt output/bilstm_${TAG}_*/ 2>/dev/null | head -1)
     [ -n "$S1_RUN" ] && [ -n "$B_RUN" ] || { echo "[PIPELINE][ERROR] missing Stage 1 or Bi-LSTM run dir for $TAG"; exit 1; }
     S1_CKPT=$(best_checkpoint "$S1_RUN"); B_CKPT=$(best_checkpoint "$B_RUN")
-    echo "[PIPELINE] stage1=$S1_CKPT bilstm=$B_CKPT"
+    OUTJ="$PROJECT_DIR/logs/${TAG}_eval_results.json"
+    if [ -n "${EVAL_REAL_DIR:-}" ]; then OUTJ="$PROJECT_DIR/logs/${TAG}_to_celebdf_crossdataset_eval.json"; fi
+    echo "[PIPELINE] stage1=$S1_CKPT bilstm=$B_CKPT real=$REAL_DIR fake=$FAKE_CROPPED_DIR list=$ETL"
     python evaluate_video_auc.py --stage1-ckpt "$S1_CKPT" --bilstm-ckpt "$B_CKPT" \
-        --test-list "$TEST_LIST" --real-cropped-dir "$CROPPED_DIR" \
-        --fake-cropped-dir "$FAKE_CROPPED_DIR" --hidden-dim 256 \
-        --output-json "$PROJECT_DIR/logs/${TAG}_eval_results.json"
+        --test-list "$ETL" --real-cropped-dir "$REAL_DIR" \
+        --fake-cropped-dir "$FAKE_CROPPED_DIR" --hidden-dim 256 --output-json "$OUTJ"
+    ;;
+
+  evaluate_ffpp)
+    # Real FF++ fakes (Deepfakes/FaceSwap/Face2Face/NeuralTextures) on unseen test targets:
+    # per-method AUC + does the 3-class head put swaps in class 1 and reenactments in class 2?
+    [ -n "${FFPP_FAKES_DIR:-}" ] || { echo "[PIPELINE][ERROR] evaluate_ffpp needs FFPP_FAKES_DIR"; exit 1; }
+    S1_RUN=$(latest_run_dir)
+    B_RUN=$(ls -dt output/bilstm_${TAG}_*/ 2>/dev/null | head -1)
+    [ -n "$S1_RUN" ] && [ -n "$B_RUN" ] || { echo "[PIPELINE][ERROR] missing Stage 1 or Bi-LSTM run dir for $TAG"; exit 1; }
+    S1_CKPT=$(best_checkpoint "$S1_RUN"); B_CKPT=$(best_checkpoint "$B_RUN")
+    python evaluate_ffpp_fakes.py --stage1-ckpt "$S1_CKPT" --bilstm-ckpt "$B_CKPT" \
+        --real-cropped-dir "$CROPPED_DIR" --fakes-root "$FFPP_FAKES_DIR" --hidden-dim 256 \
+        --output-json "$PROJECT_DIR/logs/${TAG}_ffpp_realfakes_eval.json"
     ;;
 
   *)
